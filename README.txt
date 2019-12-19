@@ -1,3 +1,5 @@
+gerea 6.0.3 have gsea features
+
 Run Gerea on local computer
 
 Step 1. installation from source
