@@ -10,17 +10,31 @@
 *
 ***************************************/
 
-using namespace std;
+//using namespace std;
 #include "gerea.h"
+#include "statistics.h"
+
+using namespace alglib_impl;
 
 // utility
 void trim_string(string &src);
 vector<string> str_split(string& src, string delimit);
 double BH_Jet(map<string, double> &qmap, string pid);
 
-extern"C" {
+double ks_th(vector<double> &obs, vector<double> &exp);
+vector<int> random_int(int n);
+void random_two_group(vector<int> &ori_vector, unsigned long class_x_n, unsigned long class_y_n, int class_x, int class_y);
+list<double> get_sorted_values(vector<double> &obs, vector<double> &exp);
+vector<double> fgt(vector<double> &data, list<double> &all);
+double psmirnov2x_2(double x, int m, int n);
+
+double fold_change(vector<double> &expression, vector<int> &class_set, vector<int> &class_all);
+double two_sample_ttest(vector<double> &exp_a, vector<double> &exp_b);
+double p_value(vector<double> &expression, vector<int> &class_set, vector<int> &class_all);
+
+/*extern"C" {
 	void fexact_(int *nrow, int *ncol, double *table, int *ldtabl, double *expect, double *percnt, double *emin, double *prt, double *pre);
-}
+}*/
 
 vector<string> str_split(string& src, string delimit) {
 	string null_subst = "";
@@ -55,6 +69,34 @@ void trim_string(string &src) {
 		//src = src.substr(0, pr);
 	}
 
+}
+
+void bionstat::cal_pup_pdown() {
+	unsigned long ln;
+	ln = 0;
+	for (unsigned long i = 0; i < p1s.size(); ++i) {
+		if (p1s[i] <= p1) {
+			ln++;
+		}
+	}
+	if (p1s.size() == 0) {
+		pup = 1.0;
+	}
+	else {
+		pup = double(ln) / double(p1s.size());
+	}
+	ln = 0;
+	for (unsigned long i = 0; i < p2s.size(); ++i) {
+		if (p2s[i] <= p2) {
+			ln++;
+		}
+	}
+	if (p2s.size() == 0) {
+		pdown = 1.0;
+	}
+	else {
+		pdown = double(ln) / double(p2s.size());
+	}
 }
 
 target::target(string id) {
@@ -98,6 +140,9 @@ int bionstat::get_tar_n() {
 		tn = an + dn + bn + en;
 	}
 	else if (type == 4) {
+		tn = an + dn + gn + bn + en + hn;
+	}
+	else if (type == 5) {
 		tn = an + dn + gn + bn + en + hn;
 	}
 
@@ -358,6 +403,108 @@ void gerea::reading_network(string file_name) {
 	reader.close();
 }
 
+void data::gen_rdm_classes(unsigned long permutation_n) {
+    vector<int> tmp_classes;
+    for (unsigned long i = 1; i <= permutation_n; i++) {
+        random_two_group(tmp_classes, class_set_n[0], class_set_n[1], class_set[0], class_set[1]);
+        rdm_classes.push_back(tmp_classes);
+    }
+
+}
+
+void data::cal_fcs(unsigned long permutation_n) {
+    map<string, gene>::iterator gene_it;
+    // for each element in the regulons
+    double tmp_fc;
+    tmp_fc = fold_change((*gene_it).second.expressions, class_set, sample_classes);
+    (*gene_it).second.fc = tmp_fc;
+    for (gene_it = genes.begin(); gene_it != genes.end(); gene_it++) {
+        for (unsigned long i = 1; i <= permutation_n; i++) {
+            tmp_fc = fold_change((*gene_it).second.expressions, class_set, rdm_classes[i - 1]);
+            (*gene_it).second.fcs.push_back(tmp_fc);
+        }
+    }
+}
+
+double fold_change(vector<double> &expression, vector<int> &class_set, vector<int> &class_all) {
+    int class_a = class_set[0];
+    int class_b = class_set[1];
+    double average_a;
+    double average_b;
+    unsigned long sn;
+    double total;
+    sn = 0;
+    total = 0.0;
+    for (unsigned long i = 0; i < class_all.size(); ++i) {
+        if (class_all[1] == class_a) {
+            sn ++;
+            total = total + expression[i];
+        }
+    }
+    if (sn != 0) {
+        average_a = total / sn;
+    }
+    else {
+        average_a = 0.0;
+    }
+    sn = 0;
+    total = 0.0;
+    for (unsigned long i = 0; i < class_all.size(); ++i) {
+        if (class_all[1] == class_b) {
+            sn ++;
+            total = total + expression[i];
+        }
+    }
+    if (sn != 0) {
+        average_b = total / sn;
+    }
+    else {
+        average_b = 0.0;
+    }
+	double log2fc = average_b - average_a;
+	double fc = 1.0;
+	if (log2fc >= 0.0) {
+		fc = pow(2.0, log2fc);
+	}
+	else {
+		fc = -1.0 / pow(2.0, log2fc);
+	}
+    return average_b - average_a;
+}
+
+void data::cal_pvalues(unsigned long permutation_n) {
+    map<string, gene>::iterator gene_it;
+    // for each element in the regulons
+    double tmp_pvalue;
+    tmp_pvalue = p_value((*gene_it).second.expressions, class_set, sample_classes);
+    (*gene_it).second.qvalue = tmp_pvalue;
+    for (gene_it = genes.begin(); gene_it != genes.end(); gene_it++) {
+        for (unsigned long i = 1; i <= permutation_n; i++) {
+            tmp_pvalue = p_value((*gene_it).second.expressions, class_set, rdm_classes[i - 1]);
+            (*gene_it).second.qvalues.push_back(tmp_pvalue);
+        }
+    }
+}
+
+double p_value(vector<double> &expression, vector<int> &class_set, vector<int> &class_all) {
+    int class_a = class_set[0];
+    int class_b = class_set[1];
+    vector<double> exp_a;
+    vector<double> exp_b;
+    for (unsigned long i = 0; i < class_all.size(); ++i) {
+        if (class_all[1] == class_a) {
+            exp_a.push_back(expression[i]);
+        }
+    }
+    for (unsigned long i = 0; i < class_all.size(); ++i) {
+        if (class_all[1] == class_b) {
+            exp_b.push_back(expression[i]);
+        }
+    }
+    double pvalue = two_sample_ttest(exp_a, exp_b);
+    return pvalue;
+}
+
 void data::cal_exp1() {
 	map<string, gene>::iterator gene_it;
 	// for each element in the regulons
@@ -385,6 +532,35 @@ void data::cal_exp2() {
 			(*gene_it).second.expresion = "nodiff";
 		}
 	}
+}
+
+vector<double> data::get_qbackground() {
+    vector<double> qbackground;
+    map<string, gene>::iterator gene_it;
+    // for each element in the regulons
+    for (gene_it = genes.begin(); gene_it != genes.end(); gene_it++) {
+		qbackground.push_back((*gene_it).second.qvalue);
+		/*
+        if ((*gene_it).second.qvalue < 0.1) {
+            qbackground.push_back((*gene_it).second.qvalue);
+        }
+        */
+    }
+    return qbackground;
+}
+
+vector<double> data::get_qbackground(unsigned long perm_i) {
+	vector<double> qbackground;
+	map<string, gene>::iterator gene_it;
+	// for each element in the regulons
+	for (gene_it = genes.begin(); gene_it != genes.end(); gene_it++) {
+		qbackground.push_back((*gene_it).second.qvalues[perm_i - 1]);
+		/*
+		if ((*gene_it).second.qvalue < 0.1) {
+			qbackground.push_back((*gene_it).second.qvalue);
+		}*/
+	}
+	return qbackground;
 }
 
 void data::data_config(string &tmp_str) {
@@ -437,14 +613,121 @@ void data::save_data2(string &tmp_str) {
 		exit(1);
 	}
 	string gene_id = tmp_vec[0];
-	float fc = atof(tmp_vec[1].c_str());
-	float qvalue = atof(tmp_vec[2].c_str());
+	double fc = atof(tmp_vec[1].c_str());
+	double qvalue = atof(tmp_vec[2].c_str());
 
 	gene new_gene;
 	new_gene.fc = fc;
 	new_gene.qvalue = qvalue;
 	new_gene.ref_id = gene_id;
 	genes[gene_id] = new_gene;
+}
+
+void data::save_data_title(string &tmp_str) {
+	vector<string> tmp_vec;
+	tmp_vec = str_split(tmp_str, "\t");
+	if (tmp_vec.size() == 0 || tmp_vec[0] != "IDREF") {
+		cout<<"invalid header line: \""<<tmp_str<<"\"\n";
+		exit(1);
+	}
+	//string gene_id = tmp_vec[0];
+	//string cls = tmp_vec[1];
+
+	titles.assign(tmp_vec.begin() + 1, tmp_vec.end());
+	sample_n = titles.size();
+
+}
+
+void data::save_data_class(string &tmp_str) {
+	vector<string> tmp_vec;
+	tmp_vec = str_split(tmp_str, "\t");
+	if (tmp_vec.size() != sample_n + 1 || tmp_vec[0] != "CLASS") {
+		cout<<"invalid class line: \""<<tmp_str<<"\"\n";
+		exit(1);
+	}
+	//string gene_id = tmp_vec[0];
+	//string cls = tmp_vec[1];
+	vector<double> tmp_classes;
+	for (unsigned long i = 1; i <= sample_n; i++) {
+		tmp_classes.push_back(atoi(tmp_vec[i].c_str()));
+	}
+
+	sample_classes.assign(tmp_classes.begin() + 1, tmp_classes.end());
+    set<int> tmp_set;
+	tmp_set.insert(tmp_classes.begin() + 1, tmp_classes.end());
+    class_set.assign(tmp_set.begin(), tmp_set.end());
+    if (class_set.size() != 2) {
+        cout<<"invalid class set number: \""<<class_set.size()<<"\"\n";
+        exit(1);
+    }
+    for(unsigned long i = 0; i < class_set.size(); ++i) {
+        unsigned long tmp_n = 0;
+        for (unsigned long i = 0; i < sample_classes.size(); ++i) {
+            if (sample_classes[1] == class_set[i]) {
+                tmp_n++;
+            }
+        }
+        class_set_n[class_set[i]] = tmp_n;
+    }
+
+}
+
+void data::save_data_exp(string &tmp_str) {
+	vector<string> tmp_vec;
+	tmp_vec = str_split(tmp_str, "\t");
+	if (tmp_vec.size() != sample_n + 1 ) {
+		cout<<"invalid data line: \""<<tmp_str<<"\"\n";
+		exit(1);
+	}
+	string gene_id = tmp_vec[0];
+	vector<double> expressions;
+	for (unsigned long i = 1; i <= sample_n; i++) {
+		expressions.push_back(atof(tmp_vec[i].c_str()));
+	}
+	gene new_gene;
+	//new_gene.fc = fc;
+	//new_gene.qvalue = qvalue;
+	new_gene.ref_id = gene_id;
+	new_gene.expressions.assign(expressions.begin(), expressions.end());
+	genes[gene_id] = new_gene;
+
+}
+
+void gerea::data_permutation() {
+    data_it.gen_rdm_classes(permutation_n);
+    data_it.cal_fcs(permutation_n);
+    data_it.cal_pvalues(permutation_n);
+
+}
+
+void gerea::reading_data_exp(string file_name) {
+	//string file_name = Data_Cfg.work_dir + Data_Cfg.session_in + ".drp";
+	//file_name = "data.txt";
+	ifstream reader;
+	reader.open(file_name.c_str(), ios::in);
+	if (reader.fail()) {
+		cout<<"cannot open file:\""<<file_name<<"\"\n";
+		exit(1);
+	}
+	string tmp_str;
+	vector<string> tmp_vec;
+
+	if (!reader.eof()) {
+		getline(reader, tmp_str, '\n');
+		trim_string(tmp_str);
+		data_it.save_data_title(tmp_str);
+	}
+	if (!reader.eof()) {
+		getline(reader, tmp_str, '\n');
+		trim_string(tmp_str);
+		data_it.save_data_class(tmp_str);
+	}
+	while (!reader.eof()) {
+		getline(reader, tmp_str, '\n');
+		trim_string(tmp_str);
+		data_it.save_data_exp(tmp_str);
+	}
+
 }
 
 void gerea::reading_data(string file_name) {
@@ -547,6 +830,52 @@ double BH_Jet(map<string, double> &qmap, string pid) {
 	}
 	//cout<<qBH<<endl;
 	return qBH;
+}
+
+void network::BH_correction_3() {
+	map<string, double> qdiff_map;
+	map<string, regulon>::iterator reg_it;
+	//p0
+	/*for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		if ((*reg_it).second.stat.get_tar_n() == 0) {
+			continue;
+		}
+		string reg_id = (*reg_it).first;
+		//double pvalue = (*reg_it).second.stat.pvalue;
+		qdiff_map[(*reg_it).first] = (*reg_it).second.stat.p0;
+	}
+
+	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		(*reg_it).second.stat.fdr_BH_0 = BH_Jet(qdiff_map, (*reg_it).first);
+	}*/
+	//p1
+	qdiff_map.clear();
+	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		if ((*reg_it).second.stat.get_tar_n() == 0) {
+			continue;
+		}
+		string reg_id = (*reg_it).first;
+		//double pvalue = (*reg_it).second.stat.pvalue;
+		qdiff_map[(*reg_it).first] = (*reg_it).second.stat.p1;
+	}
+
+	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		(*reg_it).second.stat.fdr_BH_1 = BH_Jet(qdiff_map, (*reg_it).first);
+	}
+	//p2
+	qdiff_map.clear();
+	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		if ((*reg_it).second.stat.get_tar_n() == 0) {
+			continue;
+		}
+		string reg_id = (*reg_it).first;
+		//double pvalue = (*reg_it).second.stat.pvalue;
+		qdiff_map[(*reg_it).first] = (*reg_it).second.stat.p2;
+	}
+
+	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		(*reg_it).second.stat.fdr_BH_2 = BH_Jet(qdiff_map, (*reg_it).first);
+	}
 }
 
 void network::BH_correction_2() {
@@ -762,7 +1091,7 @@ void network::cal_abcdef2() {
 	}
 }
 
-void network::run_stat1() {
+/*void network::run_stat1() {
 	map<string, regulon>::iterator reg_it;
 	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
 		int an, bn, cn, dn, en, fn;
@@ -806,9 +1135,9 @@ void network::run_stat1() {
 		//pvalue = fisher_ext(K, x, N, s);
 		(*reg_it).second.stat.pvalue = pre;
 	}
-}
+}*/
 
-void network::run_stat2() {
+/*void network::run_stat2() {
 	map<string, regulon>::iterator reg_it;
 	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
 		int an, bn, cn, dn, en, fn, gn, hn, in;
@@ -857,9 +1186,218 @@ void network::run_stat2() {
 		//pvalue = fisher_ext(K, x, N, s);
 		(*reg_it).second.stat.pvalue = pre;
 	}
+}*/
+
+void gerea::run_stat_KS3() {
+	//here
+	map<string, regulon>::iterator reg_it;
+	bionstat *stat_pt;
+	//map<string, transf>::iterator trs_it;
+	vector<double> qbackground;
+	qbackground = data_it.get_qbackground();
+
+	for (int i = 0; i < qbackground.size(); ++i) {
+		cout << qbackground[i] << ";";
+	}
+	cout << endl;
+
+	double P1, P2;
+	for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+		cout << (*reg_it).first << "\t";
+		stat_pt = &(*reg_it).second.stat;
+		//(*stat_pt).type = 5;
+		vector<double> up_qtarget;
+		vector<double> down_qtarget;
+		vector<double> all_qtarget;
+		(*reg_it).second.cal_upregulation(up_qtarget);
+		(*reg_it).second.cal_downregulation(down_qtarget);
+		/*for (int i = 0; i < up_qtarget.size(); ++i) {
+			all_qtarget.push_back(up_qtarget[i]);
+		}
+		for (int i = 0; i < down_qtarget.size(); ++i) {
+			all_qtarget.push_back(down_qtarget[i]);
+		}*/
+		//
+		for (int i = 0; i < up_qtarget.size(); ++i) {
+			cout << up_qtarget[i] << ";";
+		}
+		cout << "\t";
+		if (up_qtarget.size() < target_n) {
+			P1 = 1.0;
+		} else {
+			P1 = ks_th(up_qtarget, qbackground);
+		}
+		(*stat_pt).p1 = P1;
+		//(*reg_it).second.cal_downregulation(qtarget);
+		for (int i = 0; i < down_qtarget.size(); ++i) {
+			cout << down_qtarget[i] << ";";
+		}
+		cout << "\t";
+		if (down_qtarget.size() < target_n) {
+			P2 = 1.0;
+		} else {
+			P2 = ks_th(down_qtarget, qbackground);
+		}
+		(*stat_pt).p2 = P2;
+		cout << P1 << "\t" << P2 << endl;
+
+	}
+
+	for (unsigned long i = 1; i <= permutation_n; ++i) {
+		run_stat_KS3(i);
+	}
+
+	for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+		//cout << (*reg_it).first << "\t";
+		stat_pt = &(*reg_it).second.stat;
+		(*stat_pt).type = 5;
+		(*stat_pt).cal_pup_pdown();
+	}
 }
 
-void network::run_stat4_2() {
+void gerea::run_stat_KS3(unsigned long perm_i) {
+	//here
+	map<string, regulon>::iterator reg_it;
+	bionstat *stat_pt;
+	//map<string, transf>::iterator trs_it;
+	vector<double> qbackground;
+	qbackground = data_it.get_qbackground(perm_i);
+
+	for (int i = 0; i < qbackground.size(); ++i) {
+		cout << qbackground[i] << ";";
+	}
+	cout << endl;
+
+	double P1, P2;
+	for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+		cout << (*reg_it).first << "\t";
+		stat_pt = &(*reg_it).second.stat;
+		//(*stat_pt).type = 5;
+		vector<double> up_qtarget;
+		vector<double> down_qtarget;
+		vector<double> all_qtarget;
+		(*reg_it).second.cal_upregulation(up_qtarget, perm_i);
+		(*reg_it).second.cal_downregulation(down_qtarget, perm_i);
+		/*for (int i = 0; i < up_qtarget.size(); ++i) {
+			all_qtarget.push_back(up_qtarget[i]);
+		}
+		for (int i = 0; i < down_qtarget.size(); ++i) {
+			all_qtarget.push_back(down_qtarget[i]);
+		}*/
+		//
+		for (int i = 0; i < up_qtarget.size(); ++i) {
+			cout << up_qtarget[i] << ";";
+		}
+		cout << "\t";
+		if (up_qtarget.size() < target_n) {
+			P1 = 1.0;
+		} else {
+			P1 = ks_th(up_qtarget, qbackground);
+		}
+		(*stat_pt).p1s[perm_i -1] = P1;
+		//(*reg_it).second.cal_downregulation(qtarget);
+		for (int i = 0; i < down_qtarget.size(); ++i) {
+			cout << down_qtarget[i] << ";";
+		}
+		cout << "\t";
+		if (down_qtarget.size() < target_n) {
+			P2 = 1.0;
+		} else {
+			P2 = ks_th(down_qtarget, qbackground);
+		}
+		(*stat_pt).p2s[perm_i - 1] = P2;
+		cout << P1 << "\t" << P2 << endl;
+
+	}
+
+}
+
+void network::run_stat_KS2(int target_n, vector<double> &qbackground) {
+    //here
+    map<string, regulon>::iterator reg_it;
+    bionstat *stat_pt;
+    //map<string, transf>::iterator trs_it;
+
+	for (int i = 0; i < qbackground.size(); ++i) {
+		cout << qbackground[i] << ";";
+	}
+	cout << endl;
+
+    double P1, P2;
+    for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		cout << (*reg_it).first << "\t";
+        stat_pt = &(*reg_it).second.stat;
+        (*stat_pt).type = 5;
+        vector<double> up_qtarget;
+        vector<double> down_qtarget;
+        vector<double> all_qtarget;
+        (*reg_it).second.cal_upregulation(up_qtarget);
+        (*reg_it).second.cal_downregulation(down_qtarget);
+        for (int i = 0; i < up_qtarget.size(); ++i) {
+            all_qtarget.push_back(up_qtarget[i]);
+        }
+        for (int i = 0; i < down_qtarget.size(); ++i) {
+            all_qtarget.push_back(down_qtarget[i]);
+        }
+        //
+		for (int i = 0; i < up_qtarget.size(); ++i) {
+			cout << up_qtarget[i] << ";";
+		}
+		cout << "\t";
+        if (up_qtarget.size() < target_n) {
+            P1 = 1.0;
+        } else {
+            P1 = ks_th(up_qtarget, all_qtarget);
+        }
+        (*stat_pt).p1 = P1;
+        //(*reg_it).second.cal_downregulation(qtarget);
+		for (int i = 0; i < down_qtarget.size(); ++i) {
+			cout << down_qtarget[i] << ";";
+		}
+		cout << "\t";
+        if (down_qtarget.size() < target_n) {
+            P2 = 1.0;
+        } else {
+            P2 = ks_th(down_qtarget, all_qtarget);
+        }
+        (*stat_pt).p2 = P2;
+		cout << P1 << "\t" << P2 << endl;
+
+    }
+
+}
+
+void network::run_stat_KS(int target_n) {
+	//here
+	map<string, regulon>::iterator reg_it;
+	bionstat *stat_pt;
+	//map<string, transf>::iterator trs_it;
+	double P1, P2;
+	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		stat_pt = &(*reg_it).second.stat;
+		(*stat_pt).type = 5;
+		vector<double> qbackground;
+		vector<double> qdiff;
+		(*reg_it).second.cal_upregulation(qbackground, qdiff);
+		if (qbackground.size() < target_n || qdiff.size() < target_n) {
+			P1 = 1.0;
+		} else {
+			P1 = ks_th(qdiff, qbackground);
+		}
+		(*stat_pt).p1 = P1;
+		(*reg_it).second.cal_downregulation(qbackground, qdiff);
+		if (qbackground.size() < target_n || qdiff.size() < target_n) {
+			P2 = 1.0;
+		} else {
+			P2 = ks_th(qdiff, qbackground);
+		}
+		(*stat_pt).p2 = P2;
+
+	}
+
+}
+
+/*void network::run_stat4_2() {
 	map<string, regulon>::iterator reg_it;
 	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
 		int an, bn, cn, dn, en, fn, gn, hn, in, jn, kn, ln, mn, qn, rn;
@@ -883,7 +1421,7 @@ void network::run_stat4_2() {
 		qn = (*reg_it).second.stat.qn;
 		rn = (*reg_it).second.stat.rn;
 
-		/*
+		*//*
 		if (an + bn + cn + dn + en + fn + gn + hn + in == 0) {
 			(*reg_it).second.stat.p0 = 0;
 		}
@@ -898,7 +1436,7 @@ void network::run_stat4_2() {
 			(*reg_it).second.stat.p1 = double(an + en) / double(an + bn + cn + dn + en + fn) * 2;
 			(*reg_it).second.stat.p2 = double(bn + dn) / double(an + bn + cn + dn + en + fn) * 2;
 		}
-        */
+        *//*
 
 		int ncol, nrow;
     	double emin, expect, percnt, pre, prt;
@@ -962,9 +1500,9 @@ void network::run_stat4_2() {
 		//pvalue = fisher_ext(K, x, N, s);
 		(*reg_it).second.stat.p2 = pre;
 	}
-}
+}*/
 
-void network::run_stat4() {
+/*void network::run_stat4() {
 	map<string, regulon>::iterator reg_it;
 	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
 		int an, bn, cn, dn, en, fn, gn, hn, in;
@@ -1021,6 +1559,111 @@ void network::run_stat4() {
 		//pvalue = fisher_ext(K, x, N, s);
 		(*reg_it).second.stat.pvalue = pre;
 	}
+}*/
+
+void transf::cal_dtype2(string p_rtype) {
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if (p_rtype == "positive") {
+			if ((*tar_it).rel_type == "unknown") {
+				(*tar_it).dri_type = "unknown";
+			}
+			else if ((*tar_it).rel_type == "positive") {
+				if ((*(*tar_it).gene_pt).fc > 0.0) {
+					(*tar_it).dri_type = "upregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc < 0.0) {
+					(*tar_it).dri_type = "downregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc == 0.0) {
+					(*tar_it).dri_type = "nochange";
+				}
+			}
+			else if ((*tar_it).rel_type == "negative") {
+				if ((*(*tar_it).gene_pt).fc > 0.0) {
+					(*tar_it).dri_type = "downregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc < 0.0) {
+					(*tar_it).dri_type = "upregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc == 0.0) {
+					(*tar_it).dri_type = "nochange";
+				}
+			}
+		}
+		else if (p_rtype == "negative") {
+			if ((*tar_it).rel_type == "unknown") {
+				(*tar_it).dri_type = "unknown";
+			}
+			else if ((*tar_it).rel_type == "positive") {
+				if ((*(*tar_it).gene_pt).fc > 0.0) {
+					(*tar_it).dri_type = "downregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc < 0.0) {
+					(*tar_it).dri_type = "upregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc == 0.0) {
+					(*tar_it).dri_type = "nochange";
+				}
+			}
+			else if ((*tar_it).rel_type == "negative") {
+				if ((*(*tar_it).gene_pt).fc > 0.0) {
+					(*tar_it).dri_type = "upregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc < 0.0) {
+					(*tar_it).dri_type = "downregulation";
+				}
+				else if ((*(*tar_it).gene_pt).fc == 0.0) {
+					(*tar_it).dri_type = "nochange";
+				}
+			}
+		}
+		else if (p_rtype == "unknown") {
+			(*tar_it).dri_type = "unknown";
+		}
+	}
+}
+
+void regulon::cal_dtype2() {
+	//begin
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).rel_type == "unknown") {
+			(*tar_it).dri_type = "unknown";
+		}
+		if ((*tar_it).rel_type == "positive") {
+			if ((*(*tar_it).gene_pt).fc > 0.0) {
+				(*tar_it).dri_type = "upregulation";
+			}
+			else if ((*(*tar_it).gene_pt).fc < 0.0) {
+				(*tar_it).dri_type = "downregulation";
+			}
+			else if ((*(*tar_it).gene_pt).fc == 0.0) {
+				(*tar_it).dri_type = "nochange";
+			}
+		}
+		else if ((*tar_it).rel_type == "negative") {
+			if ((*(*tar_it).gene_pt).fc > 0.0) {
+				(*tar_it).dri_type = "downregulation";
+			}
+			else if ((*(*tar_it).gene_pt).fc < 0.0) {
+				(*tar_it).dri_type = "upregulation";
+			}
+			else if ((*(*tar_it).gene_pt).fc == 0.0) {
+				(*tar_it).dri_type = "nochange";
+			}
+		}
+	}
+	map<string, transf>::iterator trs_it;
+	for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+		(*trs_it).second.cal_dtype2((*trs_it).second.rel_type);
+	}
 }
 
 void regulon::cal_dtype() {
@@ -1034,10 +1677,10 @@ void regulon::cal_dtype() {
             (*tar_it).dri_type = "unknown";
 		}
 		if ((*tar_it).rel_type == "positive") {
-            (*tar_it).dri_type = "positive";
+            (*tar_it).dri_type = "upregulation";
 		}
 		else if ((*tar_it).rel_type == "negative") {
-			(*tar_it).dri_type = "negative";
+			(*tar_it).dri_type = "downregulation";
 		}
 	}
 	map<string, transf>::iterator trs_it;
@@ -1054,13 +1697,14 @@ void transf::cal_dtype(string p_rtype) {
     }
     if (p_rtype == "positive") {
         if ((*tar_it).rel_type == "unknown") {
+
             (*tar_it).dri_type = "unknown";
 		}
         else if ((*tar_it).rel_type == "positive") {
-            (*tar_it).dri_type = "positive";
+            (*tar_it).dri_type = "upregulation";
 		}
         else if ((*tar_it).rel_type == "negative") {
-            (*tar_it).dri_type = "negative";
+            (*tar_it).dri_type = "downregulation";
 		}
 	}
 	else if (p_rtype == "negative") {
@@ -1068,15 +1712,23 @@ void transf::cal_dtype(string p_rtype) {
             (*tar_it).dri_type = "unknown";
 		}
         else if ((*tar_it).rel_type == "positive") {
-            (*tar_it).dri_type = "negative";
+            (*tar_it).dri_type = "downregulation";
 		}
         else if ((*tar_it).rel_type == "negative") {
-            (*tar_it).dri_type = "positive";
+            (*tar_it).dri_type = "upregulation";
 		}
 	}
 	else if (p_rtype == "unknown") {
         (*tar_it).dri_type = "unknown";
 	}
+	}
+}
+
+void network::cal_dtype2() {
+	map<string, regulon>::iterator reg_it;
+	//map<string, transf>::iterator trs_it;
+	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
+		(*reg_it).second.cal_dtype2();
 	}
 }
 
@@ -1113,14 +1765,14 @@ void transf::cal_beh(int &bn, int &en, int &hn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "negative") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "downregulation") {
             bn++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "downregulation") {
 			en++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "downregulation") {
 			hn++;
 		}
 	}
@@ -1134,14 +1786,14 @@ void regulon::cal_beh(int &bn, int &en, int &hn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "negative") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "downregulation") {
             bn++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "downregulation") {
 			en++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "downregulation") {
 			hn++;
 		}
 	}
@@ -1160,14 +1812,14 @@ void transf::cal_adg(int &an, int &dn, int &gn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "positive") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "upregulation") {
             an++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "upregulation") {
 			dn++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "upregulation") {
 			gn++;
 		}
 	}
@@ -1181,14 +1833,14 @@ void regulon::cal_adg(int &an, int &dn, int &gn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "positive") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "upregulation") {
             an++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "upregulation") {
 			dn++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "upregulation") {
 			gn++;
 		}
 	}
@@ -1231,14 +1883,14 @@ void transf::cal_beh2(int &bn, int &en, int &hn, int &kn, int &qn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "negative") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "downregulation") {
             bn++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "downregulation") {
 			en++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "downregulation") {
 			//hn++;
 			if ((*(*tar_it).gene_pt).fc > 0.0) {
                 kn++;
@@ -1259,14 +1911,14 @@ void regulon::cal_beh2(int &bn, int &en, int &hn, int &kn, int &qn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "negative") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "downregulation") {
             bn++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "downregulation") {
 			en++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "downregulation") {
 			//hn++;
 			if ((*(*tar_it).gene_pt).fc > 0.0) {
                 kn++;
@@ -1284,6 +1936,96 @@ void regulon::cal_beh2(int &bn, int &en, int &hn, int &kn, int &qn) {
 	}
 }
 
+void transf::cal_upregulation(vector<double> &qtarget) {
+    //begin
+    //an = 0; bn = 0; dn = 0; en = 0;
+    vector<target>::iterator tar_it;
+    for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+        if ((*tar_it).present == false) {
+            continue;
+        }
+        if ((*tar_it).dri_type == "upregulation") {
+            qtarget.push_back((*(*tar_it).gene_pt).qvalue);
+        }
+    }
+}
+
+void transf::cal_upregulation(vector<double> &qtarget, unsigned long perm_i) {
+	//begin
+	//an = 0; bn = 0; dn = 0; en = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "upregulation") {
+			qtarget.push_back((*(*tar_it).gene_pt).qvalues[perm_i - 1]);
+		}
+	}
+}
+
+void transf::cal_upregulation(vector<double> &qbackground, vector<double> &qdiff) {
+	//begin
+	//an = 0; bn = 0; dn = 0; en = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "upregulation") {
+			qbackground.push_back((*(*tar_it).gene_pt).qvalue);
+			if ((*(*tar_it).gene_pt).expresion == "up" || (*(*tar_it).gene_pt).expresion == "down") {
+				qdiff.push_back((*(*tar_it).gene_pt).qvalue);
+			}
+		}
+	}
+}
+
+void transf::cal_downregulation(vector<double> &qtarget) {
+    //begin
+    //an = 0; bn = 0; dn = 0; en = 0;
+    vector<target>::iterator tar_it;
+    for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+        if ((*tar_it).present == false) {
+            continue;
+        }
+        if ((*tar_it).dri_type == "downregulation") {
+            qtarget.push_back((*(*tar_it).gene_pt).qvalue);
+        }
+    }
+}
+
+void transf::cal_downregulation(vector<double> &qtarget, unsigned long perm_i) {
+	//begin
+	//an = 0; bn = 0; dn = 0; en = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "downregulation") {
+			qtarget.push_back((*(*tar_it).gene_pt).qvalues[perm_i - 1]);
+		}
+	}
+}
+
+void transf::cal_downregulation(vector<double> &qbackground, vector<double> &qdiff) {
+	//begin
+	//an = 0; bn = 0; dn = 0; en = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "downregulation") {
+			qbackground.push_back((*(*tar_it).gene_pt).qvalue);
+			if ((*(*tar_it).gene_pt).expresion == "up" || (*(*tar_it).gene_pt).expresion == "down") {
+				qdiff.push_back((*(*tar_it).gene_pt).qvalue);
+			}
+		}
+	}
+}
+
 void transf::cal_adg2(int &an, int &dn, int &gn, int &jn, int &mn) {
 	//begin
 	//an = 0; bn = 0; dn = 0; en = 0;
@@ -1292,14 +2034,14 @@ void transf::cal_adg2(int &an, int &dn, int &gn, int &jn, int &mn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "positive") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "upregulation") {
             an++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "upregulation") {
 			dn++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "upregulation") {
 			//gn++;
 			if ((*(*tar_it).gene_pt).fc > 0.0) {
                 jn++;
@@ -1312,6 +2054,142 @@ void transf::cal_adg2(int &an, int &dn, int &gn, int &jn, int &mn) {
 	gn = jn + mn;
 }
 
+void regulon::cal_upregulation(vector<double> &qtarget, unsigned long perm_i) {
+	qtarget.clear();
+	//begin
+	//an = 0; dn = 0; gn = 0; jn = 0; mn = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "upregulation") {
+			qtarget.push_back((*(*tar_it).gene_pt).qvalues[perm_i - 1]);
+		}
+	}
+
+	map<string, transf>::iterator trs_it;
+	for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+		(*trs_it).second.cal_upregulation(qtarget, perm_i);
+	}
+
+}
+
+void regulon::cal_upregulation(vector<double> &qtarget) {
+    qtarget.clear();
+    //begin
+    //an = 0; dn = 0; gn = 0; jn = 0; mn = 0;
+    vector<target>::iterator tar_it;
+    for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+        if ((*tar_it).present == false) {
+            continue;
+        }
+        if ((*tar_it).dri_type == "upregulation") {
+            qtarget.push_back((*(*tar_it).gene_pt).qvalue);
+        }
+    }
+
+    map<string, transf>::iterator trs_it;
+    for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+        (*trs_it).second.cal_upregulation(qtarget);
+    }
+
+}
+
+void regulon::cal_upregulation(vector<double> &qbackground, vector<double> &qdiff) {
+	qbackground.clear();
+	qdiff.clear();
+
+	//begin
+	//an = 0; dn = 0; gn = 0; jn = 0; mn = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "upregulation") {
+			qbackground.push_back((*(*tar_it).gene_pt).qvalue);
+			if ((*(*tar_it).gene_pt).expresion == "up" || (*(*tar_it).gene_pt).expresion == "down") {
+				qdiff.push_back((*(*tar_it).gene_pt).qvalue);
+			}
+		}
+	}
+
+	map<string, transf>::iterator trs_it;
+	for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+		(*trs_it).second.cal_upregulation(qbackground, qdiff);
+	}
+
+}
+
+void regulon::cal_downregulation(vector<double> &qtarget) {
+    qtarget.clear();
+    //begin
+    //an = 0; dn = 0; gn = 0; jn = 0; mn = 0;
+    vector<target>::iterator tar_it;
+    for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+        if ((*tar_it).present == false) {
+            continue;
+        }
+        if ((*tar_it).dri_type == "downregulation") {
+            qtarget.push_back((*(*tar_it).gene_pt).qvalue);
+        }
+    }
+
+    map<string, transf>::iterator trs_it;
+    for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+        (*trs_it).second.cal_upregulation(qtarget);
+    }
+
+}
+
+void regulon::cal_downregulation(vector<double> &qtarget, unsigned long perm_i) {
+	qtarget.clear();
+	//begin
+	//an = 0; dn = 0; gn = 0; jn = 0; mn = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "downregulation") {
+			qtarget.push_back((*(*tar_it).gene_pt).qvalues[perm_i - 1]);
+		}
+	}
+
+	map<string, transf>::iterator trs_it;
+	for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+		(*trs_it).second.cal_upregulation(qtarget, perm_i);
+	}
+
+}
+
+void regulon::cal_downregulation(vector<double> &qbackground, vector<double> &qdiff) {
+	qbackground.clear();
+	qdiff.clear();
+
+	//begin
+	//an = 0; dn = 0; gn = 0; jn = 0; mn = 0;
+	vector<target>::iterator tar_it;
+	for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+		if ((*tar_it).present == false) {
+			continue;
+		}
+		if ((*tar_it).dri_type == "downregulation") {
+			qbackground.push_back((*(*tar_it).gene_pt).qvalue);
+			if ((*(*tar_it).gene_pt).expresion == "up" || (*(*tar_it).gene_pt).expresion == "down") {
+				qdiff.push_back((*(*tar_it).gene_pt).qvalue);
+			}
+		}
+	}
+
+	map<string, transf>::iterator trs_it;
+	for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+		(*trs_it).second.cal_upregulation(qbackground, qdiff);
+	}
+
+}
+
 void regulon::cal_adg2(int &an, int &dn, int &gn, int &jn, int &mn) {
 	//begin
 	an = 0; dn = 0; gn = 0; jn = 0; mn = 0;
@@ -1320,14 +2198,14 @@ void regulon::cal_adg2(int &an, int &dn, int &gn, int &jn, int &mn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "positive") {
+		if ((*(*tar_it).gene_pt).expresion == "up" && (*tar_it).dri_type == "upregulation") {
             an++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "down" && (*tar_it).dri_type == "upregulation") {
 			dn++;
 		}
-		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).expresion == "nodiff" && (*tar_it).dri_type == "upregulation") {
 			if ((*(*tar_it).gene_pt).fc > 0.0) {
                 jn++;
 			}
@@ -1371,7 +2249,7 @@ void network::cal_abcdefghi2() {
 	}
 }
 
-void network::run_stat3() {
+/*void network::run_stat3() {
 	map<string, regulon>::iterator reg_it;
 	for (reg_it = regulons.begin(); reg_it != regulons.end(); reg_it++) {
 		int an, bn, cn, dn, en, fn, gn, hn, in;
@@ -1421,7 +2299,7 @@ void network::run_stat3() {
 		//pvalue = fisher_ext(K, x, N, s);
 		(*reg_it).second.stat.pvalue = pre;
 	}
-}
+}*/
 
 void regulon::cal_cf(int &cn, int &fn) {
     //map<string, gene>::iterator gene_it;
@@ -1445,11 +2323,11 @@ void transf::cal_be(int &bn, int &en) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "negative") {
+		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "downregulation") {
             bn++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "downregulation") {
 			en++;
 		}
 	}
@@ -1463,11 +2341,11 @@ void regulon::cal_be(int &bn, int &en) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "negative") {
+		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "downregulation") {
             bn++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "negative") {
+		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "downregulation") {
 			en++;
 		}
 	}
@@ -1486,11 +2364,11 @@ void transf::cal_ad(int &an, int &dn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "positive") {
+		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "upregulation") {
             an++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "upregulation") {
 			dn++;
 		}
 	}
@@ -1504,11 +2382,11 @@ void regulon::cal_ad(int &an, int &dn) {
         if ((*tar_it).present == false) {
             continue;
         }
-		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "positive") {
+		if ((*(*tar_it).gene_pt).cls == "cls" && (*tar_it).dri_type == "upregulation") {
             an++;
             //cout<<(*tar_it).ref_id<<endl;
 		}
-		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "positive") {
+		else if ((*(*tar_it).gene_pt).cls == "---" && (*tar_it).dri_type == "upregulation") {
 			dn++;
 		}
 	}
@@ -1532,7 +2410,31 @@ void network::cal_abcdef() {
 	}
 }
 
-void gerea::run_stat() {
+void gerea::run_stat_dt2_dbt2() {
+	network_it.cal_dtype2();
+	//network_it.cal_abcdefghi();
+	network_it.cal_abcdefghi2();
+    vector<double> qbackground = data_it.get_qbackground();
+	network_it.run_stat_KS2(target_n, qbackground);
+	network_it.BH_correction_3();
+
+}
+
+void gerea::run_stat_dt2_dbt3() {
+	data_it.cal_exp2();
+	network_it.cal_dtype2();
+	//network_it.cal_abcdefghi();
+	network_it.cal_abcdefghi2();
+	//vector<double> qbackground = data_it.get_qbackground();
+	//network_it.run_stat_KS2(target_n, qbackground);
+	//network_it.run_stat_KS3(target_n);
+	run_stat_KS3();
+
+	//network_it.BH_correction_3();
+
+}
+
+/*void gerea::run_stat() {
 	if (data_it.data_type == 1 && network_it.db_type == 1) {
 		network_it.cal_abcd1();
 		network_it.run_stat1();
@@ -1563,14 +2465,14 @@ void gerea::run_stat() {
 		network_it.run_stat4_2();
 		network_it.BH_correction_2();
 	}
-	/*
+	*//*
     network_it.cal_dtype();
     //cout<<"qvalue_threshold: "<<data_it.qvalue_threshold<<endl;
     network_it.cal_abcdef(data_it.qvalue_threshold);
     network_it.run_stat2();
     network_it.BH_correction();
-    */
-}
+    *//*
+}*/
 
 void gerea::sortby_fdr(map<string, double> &fdr_map, list<string> &sortby) {
 	map<string, double>::iterator fdr_rt;
@@ -1680,6 +2582,140 @@ void gerea::Print_result3(string output_dir) {
             writer << "\t" << (*bstat).pvalue;
             writer << "\t" << (*bstat).fdr_BH;
             writer << endl;
+		}
+	}
+	writer.close();
+}
+
+void gerea::Print_result5(string output_dir) {
+    string file_name = output_dir + "/" + session_id + ".ger.txt";
+    ofstream writer;
+    writer.open(file_name.c_str(), ios::out);
+    if (writer.fail()) {
+        cout << "cannot open file " << file_name << "\n";
+        exit(1);
+    }
+
+    writer << "#result_type=4\n";
+    //writer << "regulon\ta\tb\tc\td\te\tf\tg\th\ti\tp1\tp2\n";
+
+    map<string, regulon>::iterator reg_it;
+    bionstat *bstat;
+
+    map<string, double> fdr_map;
+    list<string> sortby;
+    for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+        bstat = &((*reg_it).second.stat);
+        //if ((*bstat).get_tar_n() > 0 && (*bstat).p_nequal0()) {
+		//cout << (*bstat).get_tar_n() << endl;
+        if ((*bstat).get_tar_n() >= target_n) {
+            if ((*reg_it).second.stat.fdr_BH_1 <= (*reg_it).second.stat.fdr_BH_2) {
+                fdr_map[(*reg_it).first] = (*reg_it).second.stat.fdr_BH_1;
+            }
+            else {
+                fdr_map[(*reg_it).first] = (*reg_it).second.stat.fdr_BH_2;
+            }
+        }
+    }
+    sortby_fdr(fdr_map, sortby);
+    list<string>::iterator sort_rt;
+    for (sort_rt = sortby.begin(); sort_rt != sortby.end(); sort_rt++) {
+        bstat = &(network_it.regulons[*sort_rt].stat);
+
+        //for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+        //bstat = &((*reg_it).second.stat);
+        if ((*bstat).get_tar_n() > target_n) {
+            writer << (*sort_rt);
+            writer << "\t" << (*bstat).an;
+            writer << "\t" << (*bstat).bn;
+            writer << "\t" << (*bstat).cn;
+            writer << "\t" << (*bstat).dn;
+            writer << "\t" << (*bstat).en;
+            writer << "\t" << (*bstat).fn;
+            writer << "\t" << (*bstat).gn;
+            writer << "\t" << (*bstat).hn;
+            writer << "\t" << (*bstat).in;
+
+            /*
+            writer << "\t" << (*bstat).jn;
+            writer << "\t" << (*bstat).kn;
+            writer << "\t" << (*bstat).ln;
+            writer << "\t" << (*bstat).mn;
+            writer << "\t" << (*bstat).qn;
+            writer << "\t" << (*bstat).rn;
+            */
+
+            //writer << "\t" << (*bstat).fdr_BH_0;
+            writer << "\t" << (*bstat).fdr_BH_1;
+            writer << "\t" << (*bstat).fdr_BH_2;
+            writer << endl;
+        }
+    }
+    writer.close();
+}
+
+void gerea::Print_result6(string output_dir) {
+	string file_name = output_dir + "/" + session_id + ".ger.txt";
+	ofstream writer;
+	writer.open(file_name.c_str(), ios::out);
+	if (writer.fail()) {
+		cout << "cannot open file " << file_name << "\n";
+		exit(1);
+	}
+
+	writer << "#result_type=4\n";
+	//writer << "regulon\ta\tb\tc\td\te\tf\tg\th\ti\tp1\tp2\n";
+
+	map<string, regulon>::iterator reg_it;
+	bionstat *bstat;
+
+	map<string, double> fdr_map;
+	list<string> sortby;
+	for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+		bstat = &((*reg_it).second.stat);
+		//if ((*bstat).get_tar_n() > 0 && (*bstat).p_nequal0()) {
+		//cout << (*bstat).get_tar_n() << endl;
+		if ((*bstat).get_tar_n() >= target_n) {
+			if ((*reg_it).second.stat.pup <= (*reg_it).second.stat.pdown) {
+				fdr_map[(*reg_it).first] = (*reg_it).second.stat.pup;
+			}
+			else {
+				fdr_map[(*reg_it).first] = (*reg_it).second.stat.pdown;
+			}
+		}
+	}
+	sortby_fdr(fdr_map, sortby);
+	list<string>::iterator sort_rt;
+	for (sort_rt = sortby.begin(); sort_rt != sortby.end(); sort_rt++) {
+		bstat = &(network_it.regulons[*sort_rt].stat);
+
+		//for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+		//bstat = &((*reg_it).second.stat);
+		if ((*bstat).get_tar_n() > target_n) {
+			writer << (*sort_rt);
+			writer << "\t" << (*bstat).an;
+			writer << "\t" << (*bstat).bn;
+			writer << "\t" << (*bstat).cn;
+			writer << "\t" << (*bstat).dn;
+			writer << "\t" << (*bstat).en;
+			writer << "\t" << (*bstat).fn;
+			writer << "\t" << (*bstat).gn;
+			writer << "\t" << (*bstat).hn;
+			writer << "\t" << (*bstat).in;
+
+			/*
+            writer << "\t" << (*bstat).jn;
+            writer << "\t" << (*bstat).kn;
+            writer << "\t" << (*bstat).ln;
+            writer << "\t" << (*bstat).mn;
+            writer << "\t" << (*bstat).qn;
+            writer << "\t" << (*bstat).rn;
+            */
+
+			//writer << "\t" << (*bstat).fdr_BH_0;
+			writer << "\t" << (*bstat).pup;
+			writer << "\t" << (*bstat).pdown;
+			writer << endl;
 		}
 	}
 	writer.close();
@@ -2137,6 +3173,45 @@ void transf::encode_network4(vector<string> &tmp_strs) {
 	}
 }
 
+void transf::encode_network5(vector<string> &tmp_strs, double q_threshold) {
+    //tids.clear();
+    tmp_strs.clear();
+    vector<target>::iterator tar_it;
+    string ecd_str = "";
+    for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+        if ((*tar_it).present == true && (*tar_it).qvalue <= q_threshold) {
+            ecd_str = tar_it->rel_type + "\t" + tar_it->ref_id + "\t" + tar_it->dri_type + "\t" + tar_it->gene_pt->expresion;
+            tmp_strs.push_back(ecd_str);
+        }
+    }
+}
+
+void regulon::encode_network5(vector<string> &ecd_strs, double q_threshold) {
+    //tids.clear();
+    ecd_strs.clear();
+    vector<target>::iterator tar_it;
+    string ecd_str = "";
+    for (tar_it = targets.begin(); tar_it != targets.end(); tar_it++) {
+        if ((*tar_it).present == true && (*tar_it).qvalue <= q_threshold) {
+            ecd_str = tar_it->rel_type + "\t" + tar_it->ref_id + "\t" + tar_it->dri_type + "\t" + tar_it->gene_pt->expresion;
+            ecd_strs.push_back(ecd_str);
+        }
+    }
+
+    //set<string> tmp_tids;
+    vector<string> tmp_strs;
+    map<string, transf>::iterator trs_it;
+    vector<string>::iterator str_it;
+    for (trs_it = transfs.begin(); trs_it != transfs.end(); trs_it++) {
+        (*trs_it).second.encode_network5(tmp_strs, q_threshold);
+        for (str_it = tmp_strs.begin(); str_it != tmp_strs.end(); str_it++) {
+            ecd_str =  (*trs_it).second.rel_type + "\t" + (*trs_it).first + "\t" + (*str_it);
+            ecd_strs.push_back(ecd_str);
+        }
+        //tids.insert(tmp_tids.begin(), tmp_tids.end());
+    }
+}
+
 void regulon::encode_network4(vector<string> &ecd_strs) {
 	//tids.clear();
 	ecd_strs.clear();
@@ -2161,6 +3236,49 @@ void regulon::encode_network4(vector<string> &ecd_strs) {
 		}
 		//tids.insert(tmp_tids.begin(), tmp_tids.end());
 	}
+}
+
+void gerea::Print_details5(string output_dir) {
+    string file_name = output_dir + "/" + session_id + ".links.txt";
+    ofstream writer;
+    writer.open(file_name.c_str(), ios::out);
+    if (writer.fail()) {
+        cout << "cannot open file " << file_name << "\n";
+        exit(1);
+    }
+    //writer << "pathw_name\tdata_N\tgene_s\tdata_K\tgene_x\tp0\tp1\tpvalue\tfdr\tgene_name\n";
+
+    map<string, regulon>::iterator reg_it;
+    //bionstat *bstat;
+    vector<string> tmp_strs;
+    vector<string>::iterator str_it;
+
+    for (reg_it = network_it.regulons.begin(); reg_it != network_it.regulons.end(); reg_it++) {
+        tmp_strs.clear();
+        (*reg_it).second.encode_network5(tmp_strs, data_it.q_threshold);
+        for (str_it = tmp_strs.begin(); str_it != tmp_strs.end(); str_it++) {
+            writer << (*reg_it).first;
+            writer << "\t" << (*str_it);
+            writer << endl;
+        }
+//		bstat = &((*reg_it).second.stat);
+//		if ((*bstat).N_diff == 0) {
+//			continue;
+//		}
+//		writer << (*reg_it).first;
+//		writer << "\t" << (*bstat).data_N;
+//		writer << "\t" << (*bstat).gene_s;
+//		writer << "\t" << (*bstat).data_K;
+//		writer << "\t" << (*bstat).gene_x;
+//		writer << "\t" << (*bstat).p0;
+//		writer << "\t" << (*bstat).p1;
+//		writer << "\t" << (*bstat).pvalue;
+//		writer << "\t" << (*bstat).fdr_BH;
+//		writer << "\t" << "Tar_Str_Diff(pid)";
+//		writer << endl;
+
+    }
+    writer.close();
 }
 
 void gerea::Print_details4(string output_dir) {
@@ -2204,4 +3322,273 @@ void gerea::Print_details4(string output_dir) {
 
 	}
 	writer.close();
+}
+
+double ks_th(vector<double> &obs, vector<double> &exp) {
+	list<double> sorted_data = get_sorted_values(obs, exp);
+	vector<double> fzt = fgt(obs, sorted_data);
+	vector<double> gzt = fgt(exp, sorted_data);
+	double max_fg_dev = 0.0;
+	for (int i = 0; i < fzt.size(); ++i) {
+		double fg_dev = abs(fzt[i] - gzt[i]);
+		if (fg_dev > max_fg_dev) {
+			max_fg_dev = fg_dev;
+		}
+	}
+	//cout << "max_fg_dev: " << max_fg_dev << endl;
+
+	//int gcd = greatest_cd(obs.size(), exp.size());
+	//double J = double(obs.size()) * double(exp.size()) / double(gcd) * max_fg_dev;
+	//cout << "J: " << J << endl;
+
+	//return max_fg_dev;
+
+	double pvalue = 1 - psmirnov2x_2(max_fg_dev, obs.size(), exp.size());
+	return pvalue;
+
+}
+
+double psmirnov2x_2(double x, int m, int n) {
+	double md, nd, q, w;
+	vector<double> u;
+	int i, j;
+
+	if(m > n) {
+		i = n; n = m; m = i;
+	}
+	md = (double) m;
+	nd = (double) n;
+	/*
+       q has 0.5/mn added to ensure that rounding error doesn't
+       turn an equality into an inequality, eg abs(1/2-4/5)>3/10
+
+    */
+	q = (0.5 + floor(x * md * nd - 1e-7)) / (md * nd);
+	//u = (double *) R_alloc(n + 1, sizeof(double));
+
+	for(j = 0; j <= n; j++) {
+		//u[j] = ((j / nd) > q) ? 0 : 1;
+		u.push_back(((j / nd) > q) ? 0 : 1);
+	}
+	for(i = 1; i <= m; i++) {
+		w = (double)(i) / ((double)(i + n));
+		if((i / md) > q)
+			u[0] = 0;
+		else
+			u[0] = w * u[0];
+		for(j = 1; j <= n; j++) {
+			if(fabs(i / md - j / nd) > q)
+				u[j] = 0;
+			else
+				u[j] = w * u[j] + u[j - 1];
+		}
+	}
+	return u[n];
+}
+
+vector<double> fgt(vector<double> &data, list<double> &all) {
+	vector<double> res_vec;
+	list<double>::iterator all_it;
+	for (all_it = all.begin(); all_it != all.end(); ++all_it) {
+		int n = 0;
+		for (int j = 0; j < data.size(); ++j) {
+			if (data[j] <= *all_it) {
+				n++;
+			}
+		}
+		res_vec.push_back(double(n) / data.size());
+	}
+	/*for (int i = 0; i < res_vec.size(); ++i) {
+        cout << res_vec[i] << endl;
+    }
+    cout << endl;*/
+
+	return res_vec;
+}
+
+list<double> get_sorted_values(vector<double> &obs, vector<double> &exp) {
+	list<double> res_list;
+	for (int i = 0; i < obs.size(); ++i) {
+		res_list.push_back(obs[i]);
+	}
+	for (int i = 0; i < exp.size(); ++i) {
+		res_list.push_back(exp[i]);
+	}
+	res_list.sort();
+
+	/*list<double>::iterator res_list_it;
+    for (res_list_it = res_list.begin(); res_list_it != res_list.end(); ++res_list_it) {
+        cout << *res_list_it << endl;
+    }
+    cout << endl;*/
+
+	return res_list;
+
+}
+
+/* return random number from 1 to n */
+vector<int> random_int(int n) {
+	list<int> ori_list;
+	list<int>::iterator ori_list_it;
+	for (int i = 0; i < n; ++i) {
+		ori_list.push_back(i + 1);
+	}
+	cout << ori_list.size() << endl;
+
+	vector<int> res_list;
+	for (int i = 0; i < n; ++i) {
+		int rand_i = rand() % (n - i);
+		int it_n = 0;
+		for (ori_list_it = ori_list.begin(); ori_list_it != ori_list.end(); ++ori_list_it) {
+			if (it_n == rand_i) {
+				res_list.push_back(*ori_list_it);
+				ori_list.erase(ori_list_it);
+				break;
+			}
+			it_n++;
+		}
+	}
+	return res_list;
+}
+
+/* return random number from 1 to n */
+void random_two_group(vector<int> &ori_vector, unsigned long class_x_n, unsigned long class_y_n, int class_x, int class_y) {
+    list<int> ori_list;
+    //ori_list.assign(ori_vector.begin(), ori_vector.end());
+    list<int>::iterator ori_list_it;
+    for (int i = 0; i < ori_vector.size(); ++i) {
+        ori_list.push_back(i + 1);
+    }
+    //cout << ori_list.size() << endl;
+    vector<int> res_list_x;
+    for (int i = 0; i < class_x_n; ++i) {
+        int rand_i = rand() % (class_x_n - i);
+        int it_n = 0;
+        for (ori_list_it = ori_list.begin(); ori_list_it != ori_list.end(); ++ori_list_it) {
+            if (it_n == rand_i) {
+                res_list_x.push_back(*ori_list_it);
+                ori_list.erase(ori_list_it);
+                break;
+            }
+            it_n++;
+        }
+    }
+    vector<int> res_list_y;
+    for (int i = 0; i < class_y_n; ++i) {
+        int rand_i = rand() % (class_y_n - i);
+        int it_n = 0;
+        for (ori_list_it = ori_list.begin(); ori_list_it != ori_list.end(); ++ori_list_it) {
+            if (it_n == rand_i) {
+                res_list_y.push_back(*ori_list_it);
+                ori_list.erase(ori_list_it);
+                break;
+            }
+            it_n++;
+        }
+    }
+    for (int i = 0; i < class_x_n; ++i) {
+        ori_vector[res_list_x[i]] = class_x;
+    }
+    for (int i = 0; i < class_y_n; ++i) {
+        ori_vector[res_list_y[i]] = class_y;
+    }
+}
+
+double two_sample_ttest(vector<double> &exp_a, vector<double> &exp_b) {
+    ae_bool silent = true;
+    ae_state *_state;
+
+    ae_frame _frame_block;
+    ae_bool waserrors;
+    double eps;
+    ae_vector x;
+    ae_vector y;
+    //ae_vector xa;
+    //ae_vector ya;
+    //ae_vector xb;
+    //ae_vector yb;
+    ae_int_t x_n, y_n;
+    ae_int_t i;
+    double taill;
+    double tailr;
+    double tailb;
+    //double taill1;
+    //double tailr1;
+    //double tailb1;
+    ae_bool result;
+
+    ae_frame_make(_state, &_frame_block);
+    memset(&x, 0, sizeof(x));
+    memset(&y, 0, sizeof(y));
+    //memset(&xa, 0, sizeof(xa));
+    //memset(&ya, 0, sizeof(ya));
+    //memset(&xb, 0, sizeof(xb));
+    //memset(&yb, 0, sizeof(yb));
+    ae_vector_init(&x, 0, DT_REAL, _state, ae_true);
+    ae_vector_init(&y, 0, DT_REAL, _state, ae_true);
+    //ae_vector_init(&xa, 0, DT_REAL, _state, ae_true);
+    //ae_vector_init(&ya, 0, DT_REAL, _state, ae_true);
+    //ae_vector_init(&xb, 0, DT_REAL, _state, ae_true);
+    //ae_vector_init(&yb, 0, DT_REAL, _state, ae_true);
+
+    waserrors = ae_false;
+    eps = 0.001;
+
+    /*
+ * 2-sample pooled (equal variance) test
+ */
+    x_n = exp_a.size();
+    y_n = exp_b.size();
+    ae_vector_set_length(&x, x_n, _state);
+    ae_vector_set_length(&y, y_n, _state);
+    for (unsigned long i = 0; i < exp_a.size(); ++i) {
+        x.ptr.p_double[i] = exp_a[i];
+    }
+    for (unsigned long i = 0; i < exp_b.size(); ++i) {
+        y.ptr.p_double[i] = exp_b[i];
+    }
+    /*x.ptr.p_double[0] = -3.0;
+    x.ptr.p_double[1] = -1.5;
+    x.ptr.p_double[2] = -1.0;
+    x.ptr.p_double[3] = -0.5;
+    x.ptr.p_double[4] = 0.5;
+    x.ptr.p_double[5] = 1.0;
+    x.ptr.p_double[6] = 1.5;
+    x.ptr.p_double[7] = 3.0;
+    y.ptr.p_double[0] = -2.0;
+    y.ptr.p_double[1] = -0.5;
+    y.ptr.p_double[2] = 0.0;
+    y.ptr.p_double[3] = 0.5;
+    y.ptr.p_double[4] = 1.5;
+    y.ptr.p_double[5] = 2.0;
+    y.ptr.p_double[6] = 2.5;
+    y.ptr.p_double[7] = 4.0;*/
+    studentttest2(&x, x_n, &y, y_n, &tailb, &taill, &tailr, _state);
+    waserrors = waserrors||ae_fp_greater(ae_fabs(tailb-0.30780, _state),eps);
+    waserrors = waserrors||ae_fp_greater(ae_fabs(taill-0.15390, _state),eps);
+    waserrors = waserrors||ae_fp_greater(ae_fabs(tailr-0.84610, _state),eps);
+
+    return tailb;
+
+    /*cout << "tailb: " << tailb << endl;
+    cout << "taill: " << taill << endl;
+    cout << "tailr: " << tailr << endl;
+
+    if( !silent )
+    {
+        if( waserrors )
+        {
+            printf("TEST FAILED\n");
+        }
+        else
+        {
+            printf("TEST PASSED\n");
+        }
+
+    }
+    result = !waserrors;
+    ae_frame_leave(_state);
+
+    return true;*/
+
 }

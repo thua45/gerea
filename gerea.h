@@ -31,6 +31,7 @@ using namespace std;
 #include <ctime>
 #include <cstring>
 //#include <gmp.h>
+//#include "crossprob.h"
 
 //classes
 class gene {
@@ -41,8 +42,11 @@ public:
     string desc;
     string cls;
     string expresion; //up, down, nodiff, cls
-    float fc;
-    float qvalue;
+    vector<double> expressions;
+    double fc;
+    double qvalue;
+    vector<double> fcs;
+    vector<double> qvalues;
 };
 
 //class transf;
@@ -61,8 +65,8 @@ public:
     string dri_type;
     //string output;  //diff, up, down, stable
     //string glass; //class, not_assigned
-    float fc;
-    float qvalue;
+    double fc;
+    double qvalue;
 };
 
 //class regulon;
@@ -82,8 +86,8 @@ public:
     string dri_type;
     //string output;  //diff, up, down, stable
     //string glass; //class, not_assigned
-    float fc;
-    float qvalue;
+    double fc;
+    double qvalue;
 };
 */
 
@@ -96,6 +100,8 @@ public:
     double p0;
     double p1;
     double p2;
+    vector<double> p1s;
+    vector<double> p2s;
     double pvalue;
     double fdr_BH;
     int get_tar_n();
@@ -103,6 +109,9 @@ public:
     double fdr_BH_1;
     double fdr_BH_2;
     double fdr_BH_0;
+    double pup;
+    double pdown;
+    void cal_pup_pdown();
 };
 
 class transf {
@@ -122,8 +131,16 @@ public:
     void encode_network2(vector<string> &ecd_strs);
     void encode_network3(vector<string> &ecd_strs);
     void encode_network4(vector<string> &ecd_strs);
+    void encode_network5(vector<string> &ecd_strs, double q_threshold);
     void cal_dtype(string p_rtype);
-    //void cal_abde(int &an, int &bn, int &dn, int &en, float qvalue_threshold);
+    void cal_dtype2(string p_rtype);
+    void cal_upregulation(vector<double> &qbackground, vector<double> &qdiff);
+    void cal_downregulation(vector<double> &qbackground, vector<double> &qdiff);
+    void cal_upregulation(vector<double> &qtarget);
+    void cal_upregulation(vector<double> &qtarget, unsigned long perm_i);
+    void cal_downregulation(vector<double> &qtarget);
+    void cal_downregulation(vector<double> &qtarget, unsigned long perm_i);
+    //void cal_abde(int &an, int &bn, int &dn, int &en, double qvalue_threshold);
     void cal_ac1(int &an, int &cn);
     void cal_ace(int &an, int &cn, int &en);
     void cal_beh(int &bn, int &en, int &hn);
@@ -154,9 +171,17 @@ public:
     void encode_network2(vector<string> &ecd_strs);
     void encode_network3(vector<string> &ecd_strs);
     void encode_network4(vector<string> &ecd_strs);
+    void encode_network5(vector<string> &ecd_strs, double q_threshold);
     void cal_dtype();
-    //void cal_abde(int &an, int &bn, int &dn, int &en, float qvalue_threshold);
-    //void cal_cf(int &cn, int &fn, float qvalue_threshold);
+    void cal_dtype2();
+    //void cal_abde(int &an, int &bn, int &dn, int &en, double qvalue_threshold);
+    //void cal_cf(int &cn, int &fn, double qvalue_threshold);
+    void cal_upregulation(vector<double> &qbackground, vector<double> &qdiff);
+    void cal_downregulation(vector<double> &qbackground, vector<double> &qdiff);
+    void cal_upregulation(vector<double> &qtarget);
+    void cal_upregulation(vector<double> &qtarget, unsigned long perm_i);
+    void cal_downregulation(vector<double> &qtarget);
+    void cal_downregulation(vector<double> &qtarget, unsigned long perm_i);
     void cal_ac1(int &an, int &cn);
     void cal_bd1(int &bn, int &dn);
     void cal_ace(int &an, int &cn, int &en);
@@ -181,19 +206,34 @@ public:
     string desc;
     int data_seto;
     int data_type;
-    float q_threshold;
-    float fc_threshold;
+    double q_threshold;
+    double fc_threshold;
     string class_str;
     map<string, gene> genes;
     void data_config(string &tmp_str);
     void save_data1(string &tmp_str);
     void save_data2(string &tmp_str);
+    void save_data_title(string &tmp_str);
+    void save_data_class(string &tmp_str);
+    void save_data_exp(string &tmp_str);
     void cal_exp1();
     void cal_exp2();
+    vector<double> get_qbackground();
+    vector<double> get_qbackground(unsigned long perm_i);
     //gene* find_gene(string gene_id);
     //bool exi_gene(string gene_id);
     //void get_did(set<string> &tids);
     //void get_uid(set<string> &tids);
+    vector<string> titles;
+    vector<vector<int>> rdm_classes;
+    vector<int> sample_classes;
+    unsigned long sample_n;
+    void gen_rdm_classes(unsigned long permutation_n);
+    vector<int> class_set;
+    map<int, unsigned long> class_set_n;
+    void cal_fcs(unsigned long permutation_n);
+    void cal_pvalues(unsigned long permutation_n);
+
 };
 
 class network {
@@ -208,8 +248,9 @@ public:
     void save_link2(string &tmp_str);
     long find_regulon(string regulon_id);
     //void data_config(string &tmp_str);
+    void cal_dtype2();
     void cal_dtype();
-    //void cal_abcdef(float qvalue_threshold);
+    //void cal_abcdef(double qvalue_threshold);
     void cal_abcd1();
     void cal_abcdef2();
     void cal_abcdefghi();
@@ -218,14 +259,18 @@ public:
     void BH_correction();
     //void cal_rtype();
     //void run_stat();
-    void run_stat1();
+    /*void run_stat1();
     void run_stat2();
     void run_stat3();
-    void run_stat4();
+    void run_stat4();*/
     //void run_stat2();
 
-    void run_stat4_2();
+    //void run_stat4_2();
+    void run_stat_KS(int target_n);
+    void run_stat_KS2(int target_n, vector<double> &qbackground);
+    //void run_stat_KS3(int target_n);
     void BH_correction_2();
+    void BH_correction_3();
 };
 
 class gerea {
@@ -237,11 +282,18 @@ public:
     string desc;
     network network_it;
     data data_it;
-    int target_n;
+    unsigned long target_n;
+    unsigned long permutation_n;
     void reading_network(string file_name);
     void reading_data(string file_name);
+    void reading_data_exp(string file_name);
+    void data_permutation();
     void loading_data2network();
-    void run_stat();
+    void run_stat_dt2_dbt2();
+    void run_stat_dt2_dbt3();
+    void run_stat_KS3();
+    void run_stat_KS3(unsigned long perm_i);
+    //void run_stat();
     void sortby_fdr(map<string, double> &fdr_map, list<string> &sortby);
     void Print_result(string output_dir);
     void Print_result1(string output_dir);
@@ -254,6 +306,12 @@ public:
     void Print_details4(string output_dir);
 
     void Print_result4_2(string output_dir);
+
+    void Print_details5(string output_dir);
+    void Print_result5(string output_dir);
+
+    void Print_result6(string output_dir);
+
 };
 
 #endif
